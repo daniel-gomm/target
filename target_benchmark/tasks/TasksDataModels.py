@@ -1,6 +1,8 @@
-from typing import Dict, Optional
+from typing import Dict, Optional, List
 
 from pydantic import BaseModel, Field
+
+from target_benchmark.retrievers.RetrieversDataModels import RetrievalResultDataModel
 
 
 class EmbeddingStatisticsDataModel(BaseModel):
@@ -36,6 +38,7 @@ class RetrievalPerformanceDataModel(BaseModel):
     precision: float = Field(default=None, description="the precision of the retrieval")
     recall: float = Field(default=None, description="the recall of the retrieval")
     capped_recall: float = Field(default=None, description="Capped recall@k for multi-table retrieval setting.")
+    retrieval_results: List[List[RetrievalResultDataModel]] = Field(default=[], description="The actual retrieval results.")
     retrieval_duration_process: float = Field(
         ...,
         description="total time took to complete all retrievals in seconds, measured by process time.",
