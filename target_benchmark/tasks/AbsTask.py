@@ -340,6 +340,8 @@ class AbsTask(ABC):
             total_wall_clock_duration = 0
             total_num_retrieved = 0
 
+            retrieval_results_set = []
+
             # set up progress bar
             total_num_queries = dataset_loader.get_queries_size()
             progress_bar = tqdm(total=total_num_queries, desc=f"Retrieving Tables for {dataset_name}...")
@@ -354,6 +356,8 @@ class AbsTask(ABC):
                     path_to_retrieval_results=path_to_retrieval_results,
                     **kwargs,
                 )
+
+                retrieval_results_set.append(retrieval_results)
 
                 # update time spent
                 total_process_duration += process_duration
@@ -382,6 +386,7 @@ class AbsTask(ABC):
                 total_process_duration,
                 total_wall_clock_duration,
                 total_num_retrieved,
+                retrieval_results_set
             )
             # downstream performance, depends on what task is being run.
             downstream_task_performance = self._calculate_downstream_task_performance(**kwargs)
@@ -535,6 +540,7 @@ class AbsTask(ABC):
         total_retrieval_duration_process: float,
         total_retrieval_duration_wall_clock: float,
         num_queries_retrieved: int,
+        retrieval_results: List[List[RetrievalResultDataModel]],
     ) -> RetrievalPerformanceDataModel:
         """
         Calculate the retrieval performance after the table retrieval has been completed.
@@ -561,6 +567,7 @@ class AbsTask(ABC):
             performace = RetrievalPerformanceDataModel(
                 k=top_k,
                 # TODO: what is meant to be captured by accuracy?
+                retrieval_results=retrieval_results,
                 accuracy=self.num_overlap / self.total_tables,
                 recall=self.num_overlap / self.total_tables,
                 capped_recall=self.num_overlap / self.total_tables_capped,
