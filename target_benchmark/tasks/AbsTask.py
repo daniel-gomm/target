@@ -289,6 +289,7 @@ class AbsTask(ABC):
         top_k: int = 5,
         path_to_retrieval_results_dir: Union[Path, None] = None,
         path_to_downstream_results_dir: Union[Path, None] = None,
+            disable_progress_bar: bool = False,
         **kwargs,
     ) -> Dict[str, TaskResultsDataModel]:
         """
@@ -305,7 +306,7 @@ class AbsTask(ABC):
         Returns:
             A dictionary with the results of the retrieval task. Maps dataset name to a task result data model object. The task result data model object records both the retrieval performance and the downstream generation results.
         """
-        self._validate_dataset_loaders(dataset_loaders)
+        # self._validate_dataset_loaders(dataset_loaders)
 
         assert isinstance(retriever, CustomEmbRetr) or isinstance(
             retriever, StandardizedEmbRetr
@@ -314,6 +315,9 @@ class AbsTask(ABC):
         task_results = {}
 
         logger.info(f"start task {self.task_name}")
+
+        # if isinstance(retriever, AbsStandardEmbeddingRetriever):
+        #    batch_size = retriever.embedding_batch_size
 
         for dataset_name, dataset_loader in dataset_loaders.items():
             # construct the path to persistence files
@@ -344,7 +348,9 @@ class AbsTask(ABC):
 
             # set up progress bar
             total_num_queries = dataset_loader.get_queries_size()
-            progress_bar = tqdm(total=total_num_queries, desc=f"Retrieving Tables for {dataset_name}...")
+            progress_bar = None
+            if not disable_progress_bar:
+                progress_bar = tqdm(total=total_num_queries, desc=f"Retrieving Tables for {dataset_name}...")
             for query_batch in dataset_loader.get_queries_for_task(batch_size=batch_size):
                 # run retrieval on batch
                 retrieval_results, process_duration, wall_clock_duration, num_retrieved = self._run_retrieval_batch(
@@ -376,9 +382,11 @@ class AbsTask(ABC):
 
                 if self.total_queries_processed % 200 == 0:
                     logger.info(f"number of queries processed: {self.total_queries_processed}")
-                progress_bar.update(batch_size)
-            progress_bar.update(total_num_queries - progress_bar.n)
-            progress_bar.close()
+                if not disable_progress_bar:
+                    progress_bar.update(batch_size)
+            if not disable_progress_bar:
+                progress_bar.update(total_num_queries - progress_bar.n)
+                progress_bar.close()
 
             # retrieval performance, precision, recall, f1, etc.
             retrieval_performance = self._calculate_table_retrieval_performance(

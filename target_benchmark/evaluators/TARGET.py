@@ -62,6 +62,7 @@ class TARGET:
         ] = None,
         persist_log: bool = True,
         log_file_path: str = None,
+            disable_progress_bar: bool = False,
     ):
         """
         Pass in a list of task names for the evaluator to run. If no tasks are passed in, default table retrieval task will be created for running.
@@ -95,6 +96,7 @@ class TARGET:
         self.dataset_info = self.create_dataset_info(self.tasks)
         self.logger.info("Finished creating dataset config information. Finished setting up.")
         self.dataloaders: Dict[str, AbsDatasetLoader] = {}
+        self.disable_progress_bar = disable_progress_bar
 
     def load_tasks(
         self,
@@ -211,7 +213,8 @@ class TARGET:
         else:
             return []
 
-    def create_dataset_info(self, tasks: Dict[str, AbsTask]) -> Dict[str, DatasetConfigDataModel]:
+    @staticmethod
+    def create_dataset_info(tasks: Dict[str, AbsTask]) -> Dict[str, DatasetConfigDataModel]:
         """
         After loading in the tasks, create the dataset information dictionary
         Parameters:
@@ -238,6 +241,7 @@ class TARGET:
         Doesn't load the data until the tasks are actually being run.
 
         Parameters:
+            split (str): Define what part of the dataset split to use, options are "test", "train", and "validation".
             dataset_config (Dict[str, DatasetConfigDataModel]): A dictionary mapping dataset names to the config data models.
 
         Returns:
@@ -312,7 +316,8 @@ class TARGET:
             task_dataloaders_updated_name[construct_dataset_name_for_eval(dataloader, nih_dataloaders_lst)] = dataloader
         return task_dataloaders_updated_name, nih_dataloaders
 
-    def setup_logger(self, persist_log: bool = True, log_file_path: str = None) -> logging.Logger:
+    @staticmethod
+    def setup_logger(persist_log: bool = True, log_file_path: str = None) -> logging.Logger:
         """
         set up a logger for logging all evaluator actions.
         Parameters:
@@ -374,16 +379,40 @@ class TARGET:
             collection_name=dataset_name,
             vectors_config=models.VectorParams(size=vec_size, distance=models.Distance.COSINE),
         )
-        cur_dataloader = self.dataloaders[dataset_name]
         total_entries = self._calculate_corpus_size(dataloaders)
         vectors = []
         metadata = []
         start_process_time = time.process_time()
         start_wall_clock_time = time.time()
-        # TODO: support batching
-        with tqdm(total=total_entries, desc="Embedding Tables...") as pbar:
-            for dataloader in dataloaders:
-                for entry in cur_dataloader.convert_corpus_table_to(retriever.get_expected_corpus_format()):
+        pbar = None
+        if not self.disable_progress_bar:
+            pbar = tqdm(total=total_entries, desc="Embedding Tables...")
+        for dataloader in dataloaders:
+            corpus_iterator = iter(dataloader.convert_corpus_table_to(retriever.get_expected_corpus_format()))
+            if retriever.embedding_batch_size is not None:
+                finished = False
+                while not finished:
+                    corpus_batch = []
+                    metadata_batch = []
+                    try:
+                        for i in range(retriever.embedding_batch_size):
+                            entry = next(corpus_iterator)
+                            entry = {key: value[0] for key, value in entry.items()}
+                            corpus_batch.append(entry)
+                            metadata_batch.append({
+                                METADATA_TABLE_ID_KEY_NAME: entry[TABLE_ID_COL_NAME],
+                                METADATA_DB_ID_KEY_NAME: entry[DATABASE_ID_COL_NAME],
+                            })
+                    except StopIteration:
+                        finished = True
+                    if len(corpus_batch) > 0:
+                        embeddings = retriever.batch_embed_corpora(dataset_name, corpus_batch)
+                        vectors.extend(embeddings)
+                        metadata.extend(metadata_batch)
+                        if pbar is not None:
+                            pbar.update(len(corpus_batch))
+            else:
+                for entry in dataloader.convert_corpus_table_to(retriever.get_expected_corpus_format()):
                     entry = {key: value[0] for key, value in entry.items()}
                     table_embedding = retriever.embed_corpus(dataset_name, entry)
                     vectors.append(table_embedding)
@@ -393,7 +422,8 @@ class TARGET:
                             METADATA_DB_ID_KEY_NAME: entry[DATABASE_ID_COL_NAME],
                         }
                     )
-                    pbar.update(1)
+                    if pbar is not None:
+                        pbar.update(1)
         end_process_time = time.process_time()
         end_wall_clock_time = time.time()
         process_duration = end_process_time - start_process_time
@@ -482,15 +512,15 @@ class TARGET:
         loaded_datasets = set()
         embedding_stats = {}
         standardized = False
+        client = None
         if isinstance(retriever, AbsStandardEmbeddingRetriever):
             standardized = True
             client = QdrantClient(":memory:")
         elif isinstance(retriever, AbsCustomEmbeddingRetriever):
             standardized = False
-            client = None
         else:
             self.logger.warning(
-                "the retriever passed in is in the wrong format! it doens't inherit from any target retriever classes. "
+                "the retriever passed in is in the wrong format! it doesn't inherit from any target retriever classes. "
             )
 
         for task_name, task in self.tasks.items():
@@ -504,7 +534,6 @@ class TARGET:
                 if dataset_name not in loaded_datasets:
                     task_dataloader_with_nih = [task_dataloader] + nih_dataloaders
                     size_of_corpus = self._calculate_corpus_size(task_dataloader_with_nih)
-                    process_duration, wall_clock_duration, embedding_size = -1.0, -1.0, -1.0
                     if standardized:
                         process_duration, wall_clock_duration, embedding_size = self.embed_with_standardized_embeddings(
                             retriever, dataset_name, task_dataloader_with_nih, client
@@ -543,6 +572,7 @@ class TARGET:
                 client=client,
                 path_to_retrieval_results_dir=path_to_retrieval_results,
                 path_to_downstream_results_dir=path_to_downstream_results,
+                disable_progress_bar=self.disable_progress_bar,
                 **kwargs,
             )
 

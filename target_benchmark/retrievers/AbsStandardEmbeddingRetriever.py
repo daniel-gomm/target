@@ -1,5 +1,5 @@
 from abc import abstractmethod
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 import numpy as np
 from qdrant_client import QdrantClient
@@ -28,12 +28,13 @@ class AbsStandardEmbeddingRetriever(AbsRetrieverBase):
     To inherit from this class, fill out the `embed_query` and `embed_corpus` functions.
     """
 
-    def __init__(self, expected_corpus_format: str = "nested array"):
+    def __init__(self, expected_corpus_format: str = "nested array", embedding_batch_size: Optional[int] = None):
         """
         Parameters:
             expected_corpus_format (str, optional): a string indicating what corpus format (ie nested array, dictionary, pandas df, etc.) the `embed_corpus` function expects from its input.
         """
         super().__init__(expected_corpus_format=expected_corpus_format)
+        self.embedding_batch_size = embedding_batch_size
 
     def retrieve_batch(
         self,
@@ -48,12 +49,19 @@ class AbsStandardEmbeddingRetriever(AbsRetrieverBase):
                 f"missing key {CLIENT_KEY_NAME} in kwargs. must be included to use standardized embedding retriever."
             )
         client: QdrantClient = kwargs.get(CLIENT_KEY_NAME)
-        for query_id, query_str in zip(
-            queries[QUERY_ID_COL_NAME], queries[QUERY_COL_NAME]
-        ):
+        if self.embedding_batch_size is None:
+            query_embeddings = [self.embed_query(query_str, dataset_name) for query_str in queries[QUERY_COL_NAME]]
+        else:
+            query_embeddings = []
+            for batch_id in range(int(len(queries[QUERY_COL_NAME])/self.embedding_batch_size)):
+                batch = queries[QUERY_COL_NAME][batch_id*self.embedding_batch_size:(batch_id+1)*self.embedding_batch_size]
+                batch_embeddings = self.batch_embed_queries(batch, dataset_name)
+                query_embeddings.extend(batch_embeddings)
+
+        for query_id, query_embedding in zip(queries[QUERY_ID_COL_NAME], query_embeddings):
             result = client.search(
                 collection_name=dataset_name,
-                query_vector=self.embed_query(query_str, dataset_name, **kwargs),
+                query_vector=query_embedding,
                 limit=top_k,
                 with_payload=True,
             )
@@ -84,13 +92,29 @@ class AbsStandardEmbeddingRetriever(AbsRetrieverBase):
 
         Parameters:
 
-            queries (str): the actual query string.
+            query (str): the actual query string.
 
             dataset_name (str): identifier for the dataset that these queries come from. since retrieval evaluation can be done for multiple datasets, use this as a way of choosing which dataset's corpus to retrieve from.
 
         Returns:
-            the embeddings for the query
+            np.ndarray: the embedding for the query
         """
+        pass
+
+    @abstractmethod
+    def batch_embed_queries(self, queries: List[str], dataset_name: str) -> List[np.ndarray]:
+        """
+                Given a list of queries, return the query embeddings for searching.
+
+                Parameters:
+
+                    queries (str): the actual query string.
+
+                    dataset_name (str): identifier for the dataset that these queries come from. since retrieval evaluation can be done for multiple datasets, use this as a way of choosing which dataset's corpus to retrieve from.
+
+                Returns:
+                    List[np.ndarray]: the embeddings for the query
+                """
         pass
 
     @abstractmethod
@@ -100,9 +124,23 @@ class AbsStandardEmbeddingRetriever(AbsRetrieverBase):
 
         Parameters:
             dataset_name (str): the name of the corpus dataset.
-            corpus (Dict): entry in the corpus dataset, containing database id, table id, the table contents (which the user can assume is in the format of self.expected_corpus_format), and context metadata (with these exact keys in the dictionary).
+            corpus_entry (Dict): entry in the corpus dataset, containing database id, table id, the table contents (which the user can assume is in the format of self.expected_corpus_format), and context metadata (with these exact keys in the dictionary).
 
         Returns:
-            List[float]: embedding of the passed in table
+            np.ndarray: embedding of the passed in table
         """
+        pass
+
+    @abstractmethod
+    def batch_embed_corpora(self, dataset_name: str, corpus_entries: List[Dict]) -> List[np.ndarray]:
+        """
+                The function to embed the given corpus entries. This will be called in the evaluation pipeline before any retrieval. The corpus given will be in the same format as self.expected_corpus_format for flexibility.
+
+                Parameters:
+                    dataset_name (str): the name of the corpus dataset.
+                    corpus_entries (Dict): entries in the corpus dataset, containing database id, table id, the table contents (which the user can assume is in the format of self.expected_corpus_format), and context metadata (with these exact keys in the dictionary).
+
+                Returns:
+                    List[np.ndarray]: list of embeddings of the passed in tables
+                """
         pass
